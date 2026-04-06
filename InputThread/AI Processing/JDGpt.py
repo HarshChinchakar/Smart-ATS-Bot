@@ -1078,8 +1078,6 @@
 #         logging.error(f"JD Processing failed: {repr(e)}")
 #         print(f"[ERROR] JD processing failed: {e}")
 
-
-
 import os
 import json
 import logging
@@ -1093,11 +1091,12 @@ except ImportError:
     raise RuntimeError("Install the OpenAI Python SDK: pip install openai") from None
 
 # ---------------------------
-# PATHS & CONFIG
+# PATHS & CONFIG (Dynamically resolved to work inside Streamlit Cloud)
 # ---------------------------
-INPUT_FILE = "InputThread/JD/JD.txt"
-OUTPUT_FILE = "InputThread/JD/JD.json"
-LOG_FILE = "processing_errors.log"
+BASE_DIR = os.getcwd()
+INPUT_FILE = os.path.join(BASE_DIR, "InputThread/JD/JD.txt")
+OUTPUT_FILE = os.path.join(BASE_DIR, "InputThread/JD/JD.json")
+LOG_FILE = os.path.join(BASE_DIR, "processing_errors.log")
 MODEL_NAME = "llama-3.1-70b-versatile" # Free Groq Model
 MAX_RESPONSE_TOKENS = 2500
 
@@ -1107,14 +1106,11 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s %
 # ---------------------------
 # SAFELY LOAD API KEY & SETUP CLIENT
 # ---------------------------
-# Check Streamlit secrets first, fallback to standard environment variables
 try:
     GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
 except Exception:
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# If no key is found, set a dummy string so the SDK doesn't crash on boot, 
-# but we will catch it later if they actually try to run the parser.
 client = OpenAI(
     api_key=GROQ_API_KEY or "MISSING_KEY", 
     base_url="https://api.groq.com/openai/v1"
@@ -1129,7 +1125,6 @@ PARSE_FUNCTION = {
     "parameters": {
         "type": "object",
         "properties": {
-            # --- Core role context ---
             "role_title": {"type": "string", "description": "Exact job title as written in JD"},
             "alt_titles": {"type": "array", "items": {"type": "string"}, "description": "Other possible role labels or synonyms"},
             "seniority_level": {"type": "string", "description": "Explicit or inferred level: Junior, Mid, Senior, Lead, Principal, Staff"},
@@ -1140,8 +1135,6 @@ PARSE_FUNCTION = {
                 "items": {"type": "string"},
                 "description": "High-level buckets e.g., AIML, Fullstack, Cloud, Testing, Sales, Data, Security. Must not skew to one domain; capture all relevant."
             },
-
-            # --- Work model & logistics ---
             "location": {"type": "string", "description": "City / Region / Country if given"},
             "work_model": {"type": "string", "description": "Remote / Hybrid / Onsite (+days onsite if hybrid)"},
             "employment_type": {"type": "string", "description": "Full-time, Contract, Internship, Part-time"},
@@ -1159,16 +1152,12 @@ PARSE_FUNCTION = {
             "shift_details": {"type": "string", "description": "Day, Night, Rotational"},
             "visa_sponsorship": {"type": "boolean", "description": "True if JD states sponsorship available"},
             "clearances_required": {"type": "array", "items": {"type": "string"}, "description": "Background checks, security clearances etc."},
-
-            # --- Experience & education ---
             "years_experience_required": {"type": "number", "description": "Minimum total years of professional experience"},
             "education_requirements": {"type": "array", "items": {"type": "string"}, "description": "Explicitly listed degrees/courses"},
             "min_degree_level": {"type": "string", "description": "e.g., Bachelors, Masters, PhD, or 'Open'"},
             "fields_of_study": {"type": "array", "items": {"type": "string"}, "description": "Relevant academic disciplines"},
             "certifications_required": {"type": "array", "items": {"type": "string"}},
             "certifications_preferred": {"type": "array", "items": {"type": "string"}},
-
-            # --- Skills ---
             "required_skills": {
                 "type": "array", "items": {"type": "string"},
                 "description": "Explicit must-have skills mentioned in JD"
@@ -1216,13 +1205,9 @@ PARSE_FUNCTION = {
                     }
                 }
             },
-
-            # --- Duties & outcomes ---
             "responsibilities": {"type": "array", "items": {"type": "string"}, "description": "Key tasks the role must perform"},
             "deliverables": {"type": "array", "items": {"type": "string"}, "description": "Expected outputs / goals"},
             "kpis_okrs": {"type": "array", "items": {"type": "string"}, "description": "Performance indicators if stated"},
-
-            # --- Team & reporting ---
             "team_context": {
                 "type": "object",
                 "description": "Org context for the role",
@@ -1233,13 +1218,9 @@ PARSE_FUNCTION = {
                     "direct_reports": {"type": "integer"}
                 }
             },
-
-            # --- Constraints / exclusions / compliance ---
             "exclusions": {"type": "array", "items": {"type": "string"}, "description": "Disqualifiers or anti-requirements"},
             "compliance": {"type": "array", "items": {"type": "string"}, "description": "Legal/regulatory compliance needs"},
             "screening_questions": {"type": "array", "items": {"type": "string"}},
-
-            # --- Interview process ---
             "interview_process": {
                 "type": "object",
                 "description": "Stages and evaluation focus if listed",
@@ -1259,8 +1240,6 @@ PARSE_FUNCTION = {
                     "assignment_expected": {"type": "boolean"}
                 }
             },
-
-            # --- Compensation & benefits ---
             "compensation": {
                 "type": "object",
                 "description": "Salary and perks if given",
@@ -1274,8 +1253,6 @@ PARSE_FUNCTION = {
                 }
             },
             "benefits": {"type": "array", "items": {"type": "string"}},
-
-            # --- Keywords for ATS scoring ---
             "keywords_flat": {
                 "type": "array", "items": {"type": "string"},
                 "description": "Deduplicated, canonicalized tokens for exact-match scoring"
@@ -1285,8 +1262,6 @@ PARSE_FUNCTION = {
                 "additionalProperties": {"type": "number"},
                 "description": "Token -> weight (0–1) reflecting importance"
             },
-
-            # --- Weighting knobs ---
             "weighting": {
                 "type": "object",
                 "description": "Relative importance across categories. Adjust dynamically per JD.",
@@ -1303,8 +1278,6 @@ PARSE_FUNCTION = {
                     "keywords_semantic": {"type": "number"}
                 }
             },
-
-            # --- Embedding hints ---
             "embedding_hints": {
                 "type": "object",
                 "properties": {
@@ -1315,8 +1288,6 @@ PARSE_FUNCTION = {
                     "seniority_embed": {"type": "string"}
                 }
             },
-
-            # --- Explainability ---
             "explainability": {
                 "type": "object",
                 "properties": {
@@ -1336,8 +1307,6 @@ PARSE_FUNCTION = {
                     }
                 }
             },
-
-            # --- HR insights ---
             "hr_points": {"type": "integer", "description": "Count of recommendations/extra inferred requirements"},
             "hr_notes": {
                 "type": "array",
@@ -1354,8 +1323,6 @@ PARSE_FUNCTION = {
                     }
                 }
             },
-
-            # --- Meta ---
             "meta": {
                 "type": "object",
                 "properties": {
@@ -1382,10 +1349,12 @@ PARSE_FUNCTION = {
 # ---------------------------
 # Core JD processor
 # ---------------------------
-def process_jd_file(in_path: str) -> dict:
-    # Final check before running to ensure key is valid
+def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> dict:
     if not GROQ_API_KEY or GROQ_API_KEY == "MISSING_KEY":
         raise ValueError("GROQ_API_KEY is missing. Please add it to your .streamlit/secrets.toml file.")
+
+    if not os.path.exists(in_path):
+        raise FileNotFoundError(f"Missing input file: {in_path}. Make sure the file exists before processing.")
 
     with open(in_path, "r", encoding="utf-8", errors="ignore") as f:
         raw_text = f.read()
@@ -1540,8 +1509,12 @@ def process_jd_file(in_path: str) -> dict:
     except Exception as _err:
         logging.exception("Failed to enrich domain_tags: %s", repr(_err))
 
+    # --- THE CRITICAL FIX IS HERE ---
+    # We guarantee the file writes internally before exiting the function
+    with open(out_path, "w", encoding="utf-8") as wf:
+        json.dump(parsed, wf, indent=2, ensure_ascii=False)
+    
     return parsed
-
 
 # ---------------------------
 # Entrypoint
@@ -1549,10 +1522,9 @@ def process_jd_file(in_path: str) -> dict:
 if __name__ == "__main__":
     print("[START] JD processing")
     try:
-        jd_json = process_jd_file(INPUT_FILE)
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as wf:
-            json.dump(jd_json, wf, indent=2, ensure_ascii=False)
-        print(f"[OK] JD JSON written -> {OUTPUT_FILE}")
+        # File paths are safely defaulted, and the write logic handles itself internally
+        jd_json = process_jd_file()
+        print(f"[OK] JD JSON successfully generated!")
     except Exception as e:
         logging.error(f"JD Processing failed: {repr(e)}")
         print(f"[ERROR] JD processing failed: {e}")
