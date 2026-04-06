@@ -696,6 +696,188 @@ PARSE_FUNCTION = {
 # ---------------------------
 # Core JD processor
 # ---------------------------
+# def process_jd_file(in_path: str) -> dict:
+#     with open(in_path, "r", encoding="utf-8", errors="ignore") as f:
+#         raw_text = f.read()
+
+#     system_msg = {
+#         "role": "system",
+#         "content": (
+#             "You are a meticulous Job Description (JD) parser for ATS + semantic matching. Add all information mentioned directly or indirectly, Make sure all information is captured without exception and if some information or skills are missing which are paramount or necessary but not present in the JD, add them yourself"
+#             "The caller will provide raw JD text. Your task: return EXACTLY ONE function call to `parse_jd_detailed` "
+#             "with arguments conforming to the provided schema. "
+#             "Be exhaustive and precise: DO NOT lose information. Prefer concise, canonical tokens for skills.ADD Missing skills if relevant skills are missing from JD specific to the given domain."
+#             "IMPORTANT In given domain add all specific languages (technical) and atleast 5 relevant frameworks , libraries to these languages"
+#             "Normalize skills so they align with a resume ontology but do not remove any skills/tools from the JD"
+#             "(programming, ml_ai, frontend, backend, testing, databases, cloud, infra, devtools, methodologies). "
+#             "Populate fine-grained `skill_requirements` (level, years_min, versions, mandatory, related_tools). "
+#             "Extract responsibilities, deliverables, KPIs/OKRs, exclusions, compliance, interview stages, "
+#             "compensation if present, and team context. "
+#             "Build `keywords_flat` (deduped, canonical tokens) and `keywords_weighted` (token -> importance 0–1). "
+#             "Set `weighting` to reflect realistic hiring priorities "
+#             "(e.g., required_skills > responsibilities > domain_relevance > technical_depth > preferred_skills > soft_skills; "
+#             "adjust if the JD implies otherwise). "
+#             "Provide `embedding_hints` to power semantic search (skills_embed, responsibilities_embed, overall_embed, "
+#             "negatives_embed, seniority_embed). "
+#             "Provide `provenance_spans` with character offsets for key items whenever feasible. "
+#             "Provide `explainability` (top_jd_sentences, key_phrases, rationales). "
+#             "HR Points rule (MANDATORY): Whenever you identify a recommendation or extra inferred requirement "
+#             "(from wording, context, or common hiring practice), append an item to `hr_notes`. "
+#             "Set hr_notes[i].type = 'recommendation' (if it improves clarity/completeness) or 'inferred_requirement' "
+#             "(if the JD implies it indirectly). "
+#             "Include category, note, reason, impact (0–1), and any source_provenance snippets. "
+#             "Set `hr_points` = number of items in `hr_notes`. Each item contributes +1. "
+#             "Do NOT add points for ordinary extractions. "
+#             "IMPORTANT: If something is not stated, DO NOT hallucinate. Use `hr_notes` for recommendations instead of inventing facts. "
+#             "If the JD is ambiguous (e.g., hybrid days, version specificity), log clarity recommendations in `hr_notes`. "
+#             "Keep text fields concise but complete; avoid filler language. "
+#             "Return ONLY the function call to `parse_jd_detailed` with its arguments."
+#         )
+#     }
+
+#     user_msg = {"role": "user", "content": f"RawJDText:\n```\n{raw_text}\n```"}
+
+#     resp = client.chat.completions.create(
+#         model=MODEL_NAME,
+#         messages=[system_msg, user_msg],
+#         functions=[PARSE_FUNCTION],
+#         function_call="auto",
+#         temperature=0.0,
+#         max_tokens=MAX_RESPONSE_TOKENS
+#     )
+
+#     choice = resp.choices[0]
+#     msg = choice.message
+
+#     func_call = getattr(msg, "function_call", None)
+#     if func_call is None and isinstance(msg, dict):
+#         func_call = msg.get("function_call")
+#     if not func_call:
+#         raise RuntimeError("Model did not return function_call response.")
+
+#     args_text = getattr(func_call, "arguments", None) or func_call.get("arguments")
+#     if not args_text:
+#         raise RuntimeError("Function call arguments missing.")
+
+#     parsed = json.loads(args_text)
+#     parsed.setdefault("meta", {})
+#     parsed["meta"].setdefault("raw_text_length", len(raw_text))
+#     parsed["meta"].setdefault("last_updated", time.strftime("%Y-%m-%d"))
+
+#     # ---------------------------
+#     # NEW: enrich domain_tags so resume parser receives explicit seniority/domain/requirements + HR highlights
+#     # - Keep domain_tags as an array of strings (backwards-compatible).
+#     # - Add a concise machine-readable JD summary tag (JSON encoded string under a prefix),
+#     #   then append HR notes and skill tags. This doesn't remove existing domain_tags,
+#     #   it only augments them with structured info the resume parser can consume.
+#     # ---------------------------
+#     try:
+#         # ensure domain_tags exists and is a list
+#         existing_tags = parsed.get("domain_tags") if isinstance(parsed.get("domain_tags"), list) else []
+#         domain_tags = list(existing_tags)
+
+#         # seniority: prefer parsed value, otherwise infer from raw_text heuristics
+#         seniority = parsed.get("seniority_level") or ""
+#         if not seniority:
+#             lt = raw_text.lower()
+#             if "principal" in lt:
+#                 seniority = "Principal"
+#             elif "lead" in lt and "tech lead" not in lt:
+#                 seniority = "Lead"
+#             elif "senior" in lt:
+#                 seniority = "Senior"
+#             elif "mid-level" in lt or "mid level" in lt or "midlevel" in lt:
+#                 seniority = "Mid"
+#             elif "junior" in lt or "entry level" in lt or "fresher" in lt:
+#                 seniority = "Junior"
+#             else:
+#                 seniority = parsed.get("meta", {}).get("inferred_seniority", "Unspecified")
+
+#         # domain: prefer industry, then department, then empty
+#         domain = parsed.get("industry") or parsed.get("department") or "Unspecified"
+
+#         # build concise summary payload for domain_tags (JSON string) - resume parser can json.loads after detecting prefix
+#         summary_payload = {
+#             "role_title": parsed.get("role_title", ""),
+#             "seniority": seniority,
+#             "domain": domain,
+#             "years_experience_required": parsed.get("years_experience_required"),
+#             "min_degree_level": parsed.get("min_degree_level"),
+#             "required_skills": parsed.get("required_skills", [])[:50],
+#             "preferred_skills": parsed.get("preferred_skills", [])[:50],
+#             "top_tools": parsed.get("tools_tech", [])[:50],
+#             "confidence_note": "seniority inferred heuristically if not provided",
+#         }
+#         # add as a single structured string tag with a fixed prefix so other modules can detect and parse it
+#         domain_tags.append("JD_SUMMARY:" + json.dumps(summary_payload, ensure_ascii=False))
+
+#         # add per-skill tags for direct matching (keeps tokens simple)
+#         for s in parsed.get("required_skills", [])[:100]:
+#             if isinstance(s, str) and s.strip():
+#                 domain_tags.append(f"REQ_SKILL:{s.strip()}")
+
+#         for s in parsed.get("preferred_skills", [])[:100]:
+#             if isinstance(s, str) and s.strip():
+#                 domain_tags.append(f"PREF_SKILL:{s.strip()}")
+
+#         # include key tool tags
+#         for t in parsed.get("tools_tech", [])[:100]:
+#             if isinstance(t, str) and t.strip():
+#                 domain_tags.append(f"TOOL:{t.strip()}")
+
+#         # include canonical top-level domain tags if present (e.g., AIML, Fullstack)
+#         if isinstance(parsed.get("domain_tags"), list):
+#             for t in parsed.get("domain_tags"):
+#                 if isinstance(t, str) and t.strip():
+#                     domain_tags.append(f"DOMAIN_TOP:{t.strip()}")
+
+#         # Add HR notes as compact tags that keep human-readable content while machine-detectable
+#         for hr in parsed.get("hr_notes", [])[:200]:
+#             cat = hr.get("category", "general")
+#             typ = hr.get("type", "recommendation")
+#             note = hr.get("note", "")
+#             impact = hr.get("impact", 0)
+#             # sanitize and limit length
+#             note_short = (note.strip()[:240] + "...") if len(note.strip()) > 240 else note.strip()
+#             # compact HR tag format
+#             hr_tag = f"HR_NOTE:cat={cat};type={typ};impact={impact};note={note_short}"
+#             domain_tags.append(hr_tag)
+
+#         # add explainability top phrases as tags to influence semantic weighting quickly
+#         top_phrases = parsed.get("explainability", {}).get("top_jd_sentences", []) if parsed.get("explainability") else []
+#         for p in top_phrases[:20]:
+#             if isinstance(p, str) and p.strip():
+#                 domain_tags.append(f"PHRASE:{p.strip()[:200]}")
+
+#         # final assignment (dedupe while keeping order)
+#         seen = set()
+#         deduped = []
+#         for t in domain_tags:
+#             if not isinstance(t, str):
+#                 continue
+#             key = t.strip().lower()
+#             if key in seen:
+#                 continue
+#             seen.add(key)
+#             deduped.append(t)
+#         parsed["domain_tags"] = deduped
+
+#         # ensure seniority_level is present for downstream consumers
+#         parsed["seniority_level"] = seniority
+
+#         # if hr_points missing, set to len of hr_notes
+#         if "hr_points" not in parsed:
+#             parsed["hr_points"] = len(parsed.get("hr_notes", []))
+
+#     except Exception as _err:
+#         # don't fail the whole pipeline on tagging; just log
+#         logging.exception("Failed to enrich domain_tags: %s", repr(_err))
+
+#     return parsed
+
+# ---------------------------
+# Core JD processor (Updated for Groq)
+# ---------------------------
 def process_jd_file(in_path: str) -> dict:
     with open(in_path, "r", encoding="utf-8", errors="ignore") as f:
         raw_text = f.read()
@@ -737,11 +919,18 @@ def process_jd_file(in_path: str) -> dict:
 
     user_msg = {"role": "user", "content": f"RawJDText:\n```\n{raw_text}\n```"}
 
-    resp = client.chat.completions.create(
-        model=MODEL_NAME,
+    # Dynamically setup the client to route to Groq using the OpenAI SDK
+    groq_client = OpenAI(
+        api_key=st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY")),
+        base_url="https://api.groq.com/openai/v1"
+    )
+
+    # Groq API Call utilizing the 'tools' parameter instead of deprecated 'functions'
+    resp = groq_client.chat.completions.create(
+        model="llama-3.1-70b-versatile", # Free Groq model excellent for JSON/Tool calling
         messages=[system_msg, user_msg],
-        functions=[PARSE_FUNCTION],
-        function_call="auto",
+        tools=[{"type": "function", "function": PARSE_FUNCTION}],
+        tool_choice={"type": "function", "function": {"name": "parse_jd_detailed"}},
         temperature=0.0,
         max_tokens=MAX_RESPONSE_TOKENS
     )
@@ -749,13 +938,13 @@ def process_jd_file(in_path: str) -> dict:
     choice = resp.choices[0]
     msg = choice.message
 
-    func_call = getattr(msg, "function_call", None)
-    if func_call is None and isinstance(msg, dict):
-        func_call = msg.get("function_call")
-    if not func_call:
-        raise RuntimeError("Model did not return function_call response.")
+    # Extract tool call arguments (Groq uses the modern tool_calls schema)
+    if getattr(msg, "tool_calls", None) is None or len(msg.tool_calls) == 0:
+        raise RuntimeError("Model did not return a tool_call response.")
 
-    args_text = getattr(func_call, "arguments", None) or func_call.get("arguments")
+    func_call = msg.tool_calls[0].function
+    args_text = getattr(func_call, "arguments", None)
+    
     if not args_text:
         raise RuntimeError("Function call arguments missing.")
 
@@ -874,7 +1063,6 @@ def process_jd_file(in_path: str) -> dict:
         logging.exception("Failed to enrich domain_tags: %s", repr(_err))
 
     return parsed
-
 
 # ---------------------------
 # Entrypoint
