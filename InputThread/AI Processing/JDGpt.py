@@ -1078,43 +1078,53 @@
 #         logging.error(f"JD Processing failed: {repr(e)}")
 #         print(f"[ERROR] JD processing failed: {e}")
 
+#!/usr/bin/env python3
+"""
+JD TXT -> Normalized JSON converter
+- Extracts structured Job Description JSON for comparison with resumes.
+- Designed for keyword and semantic matching: no information loss, all skills + nuances captured.
+- Output is always written to JD.json (overwritten each run).
+"""
+
+import os
+import streamlit as st
+# from dotenv import load_dotenv
+
+# # Load from your .env file
+# load_dotenv(".env")
+
+# ---------------------------
+# PATHS & CONFIG
+# ---------------------------
+INPUT_FILE = "InputThread/JD/JD.txt"
+OUTPUT_FILE = "InputThread/JD/JD.json"
+LOG_FILE = "processing_errors.log"
+# Safely get key, fallback to string to prevent import crash
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", "MISSING_KEY"))
+MODEL_NAME = "llama-3.1-70b-versatile"
+MAX_RESPONSE_TOKENS = 2500
+# ---------------------------
+
 import os
 import json
 import logging
 import time
 from pathlib import Path
-import streamlit as st
 
 try:
     from openai import OpenAI
-except ImportError:
+except Exception:
     raise RuntimeError("Install the OpenAI Python SDK: pip install openai") from None
 
-# ---------------------------
-# PATHS & CONFIG (Dynamically resolved to work inside Streamlit Cloud)
-# ---------------------------
-BASE_DIR = os.getcwd()
-INPUT_FILE = os.path.join(BASE_DIR, "InputThread/JD/JD.txt")
-OUTPUT_FILE = os.path.join(BASE_DIR, "InputThread/JD/JD.json")
-LOG_FILE = os.path.join(BASE_DIR, "processing_errors.log")
-MODEL_NAME = "llama-3.1-70b-versatile" # Free Groq Model
-MAX_RESPONSE_TOKENS = 2500
+# Setup OpenAI client routed to Groq API
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
 
 Path(os.path.dirname(OUTPUT_FILE)).mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ---------------------------
-# SAFELY LOAD API KEY & SETUP CLIENT
-# ---------------------------
-try:
-    GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY"))
-except Exception:
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
-client = OpenAI(
-    api_key=GROQ_API_KEY or "MISSING_KEY", 
-    base_url="https://api.groq.com/openai/v1"
-)
 
 # ---------------------------
 # JSON schema for JD parsing
@@ -1125,6 +1135,7 @@ PARSE_FUNCTION = {
     "parameters": {
         "type": "object",
         "properties": {
+            # --- Core role context ---
             "role_title": {"type": "string", "description": "Exact job title as written in JD"},
             "alt_titles": {"type": "array", "items": {"type": "string"}, "description": "Other possible role labels or synonyms"},
             "seniority_level": {"type": "string", "description": "Explicit or inferred level: Junior, Mid, Senior, Lead, Principal, Staff"},
@@ -1135,6 +1146,8 @@ PARSE_FUNCTION = {
                 "items": {"type": "string"},
                 "description": "High-level buckets e.g., AIML, Fullstack, Cloud, Testing, Sales, Data, Security. Must not skew to one domain; capture all relevant."
             },
+
+            # --- Work model & logistics ---
             "location": {"type": "string", "description": "City / Region / Country if given"},
             "work_model": {"type": "string", "description": "Remote / Hybrid / Onsite (+days onsite if hybrid)"},
             "employment_type": {"type": "string", "description": "Full-time, Contract, Internship, Part-time"},
@@ -1152,12 +1165,16 @@ PARSE_FUNCTION = {
             "shift_details": {"type": "string", "description": "Day, Night, Rotational"},
             "visa_sponsorship": {"type": "boolean", "description": "True if JD states sponsorship available"},
             "clearances_required": {"type": "array", "items": {"type": "string"}, "description": "Background checks, security clearances etc."},
+
+            # --- Experience & education ---
             "years_experience_required": {"type": "number", "description": "Minimum total years of professional experience"},
             "education_requirements": {"type": "array", "items": {"type": "string"}, "description": "Explicitly listed degrees/courses"},
             "min_degree_level": {"type": "string", "description": "e.g., Bachelors, Masters, PhD, or 'Open'"},
             "fields_of_study": {"type": "array", "items": {"type": "string"}, "description": "Relevant academic disciplines"},
             "certifications_required": {"type": "array", "items": {"type": "string"}},
             "certifications_preferred": {"type": "array", "items": {"type": "string"}},
+
+            # --- Skills ---
             "required_skills": {
                 "type": "array", "items": {"type": "string"},
                 "description": "Explicit must-have skills mentioned in JD"
@@ -1205,9 +1222,13 @@ PARSE_FUNCTION = {
                     }
                 }
             },
+
+            # --- Duties & outcomes ---
             "responsibilities": {"type": "array", "items": {"type": "string"}, "description": "Key tasks the role must perform"},
             "deliverables": {"type": "array", "items": {"type": "string"}, "description": "Expected outputs / goals"},
             "kpis_okrs": {"type": "array", "items": {"type": "string"}, "description": "Performance indicators if stated"},
+
+            # --- Team & reporting ---
             "team_context": {
                 "type": "object",
                 "description": "Org context for the role",
@@ -1218,9 +1239,13 @@ PARSE_FUNCTION = {
                     "direct_reports": {"type": "integer"}
                 }
             },
+
+            # --- Constraints / exclusions / compliance ---
             "exclusions": {"type": "array", "items": {"type": "string"}, "description": "Disqualifiers or anti-requirements"},
             "compliance": {"type": "array", "items": {"type": "string"}, "description": "Legal/regulatory compliance needs"},
             "screening_questions": {"type": "array", "items": {"type": "string"}},
+
+            # --- Interview process ---
             "interview_process": {
                 "type": "object",
                 "description": "Stages and evaluation focus if listed",
@@ -1240,6 +1265,8 @@ PARSE_FUNCTION = {
                     "assignment_expected": {"type": "boolean"}
                 }
             },
+
+            # --- Compensation & benefits ---
             "compensation": {
                 "type": "object",
                 "description": "Salary and perks if given",
@@ -1253,6 +1280,8 @@ PARSE_FUNCTION = {
                 }
             },
             "benefits": {"type": "array", "items": {"type": "string"}},
+
+            # --- Keywords for ATS scoring ---
             "keywords_flat": {
                 "type": "array", "items": {"type": "string"},
                 "description": "Deduplicated, canonicalized tokens for exact-match scoring"
@@ -1262,6 +1291,8 @@ PARSE_FUNCTION = {
                 "additionalProperties": {"type": "number"},
                 "description": "Token -> weight (0–1) reflecting importance"
             },
+
+            # --- Weighting knobs ---
             "weighting": {
                 "type": "object",
                 "description": "Relative importance across categories. Adjust dynamically per JD.",
@@ -1278,6 +1309,8 @@ PARSE_FUNCTION = {
                     "keywords_semantic": {"type": "number"}
                 }
             },
+
+            # --- Embedding hints ---
             "embedding_hints": {
                 "type": "object",
                 "properties": {
@@ -1288,6 +1321,8 @@ PARSE_FUNCTION = {
                     "seniority_embed": {"type": "string"}
                 }
             },
+
+            # --- Explainability ---
             "explainability": {
                 "type": "object",
                 "properties": {
@@ -1307,6 +1342,8 @@ PARSE_FUNCTION = {
                     }
                 }
             },
+
+            # --- HR insights ---
             "hr_points": {"type": "integer", "description": "Count of recommendations/extra inferred requirements"},
             "hr_notes": {
                 "type": "array",
@@ -1323,6 +1360,8 @@ PARSE_FUNCTION = {
                     }
                 }
             },
+
+            # --- Meta ---
             "meta": {
                 "type": "object",
                 "properties": {
@@ -1349,13 +1388,7 @@ PARSE_FUNCTION = {
 # ---------------------------
 # Core JD processor
 # ---------------------------
-def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> dict:
-    if not GROQ_API_KEY or GROQ_API_KEY == "MISSING_KEY":
-        raise ValueError("GROQ_API_KEY is missing. Please add it to your .streamlit/secrets.toml file.")
-
-    if not os.path.exists(in_path):
-        raise FileNotFoundError(f"Missing input file: {in_path}. Make sure the file exists before processing.")
-
+def process_jd_file(in_path: str) -> dict:
     with open(in_path, "r", encoding="utf-8", errors="ignore") as f:
         raw_text = f.read()
 
@@ -1396,7 +1429,6 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
 
     user_msg = {"role": "user", "content": f"RawJDText:\n```\n{raw_text}\n```"}
 
-    # Groq API Call
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[system_msg, user_msg],
@@ -1423,10 +1455,19 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
     parsed["meta"].setdefault("raw_text_length", len(raw_text))
     parsed["meta"].setdefault("last_updated", time.strftime("%Y-%m-%d"))
 
+    # ---------------------------
+    # NEW: enrich domain_tags so resume parser receives explicit seniority/domain/requirements + HR highlights
+    # - Keep domain_tags as an array of strings (backwards-compatible).
+    # - Add a concise machine-readable JD summary tag (JSON encoded string under a prefix),
+    #   then append HR notes and skill tags. This doesn't remove existing domain_tags,
+    #   it only augments them with structured info the resume parser can consume.
+    # ---------------------------
     try:
+        # ensure domain_tags exists and is a list
         existing_tags = parsed.get("domain_tags") if isinstance(parsed.get("domain_tags"), list) else []
         domain_tags = list(existing_tags)
 
+        # seniority: prefer parsed value, otherwise infer from raw_text heuristics
         seniority = parsed.get("seniority_level") or ""
         if not seniority:
             lt = raw_text.lower()
@@ -1443,8 +1484,10 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
             else:
                 seniority = parsed.get("meta", {}).get("inferred_seniority", "Unspecified")
 
+        # domain: prefer industry, then department, then empty
         domain = parsed.get("industry") or parsed.get("department") or "Unspecified"
 
+        # build concise summary payload for domain_tags (JSON string) - resume parser can json.loads after detecting prefix
         summary_payload = {
             "role_title": parsed.get("role_title", ""),
             "seniority": seniority,
@@ -1456,8 +1499,10 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
             "top_tools": parsed.get("tools_tech", [])[:50],
             "confidence_note": "seniority inferred heuristically if not provided",
         }
+        # add as a single structured string tag with a fixed prefix so other modules can detect and parse it
         domain_tags.append("JD_SUMMARY:" + json.dumps(summary_payload, ensure_ascii=False))
 
+        # add per-skill tags for direct matching (keeps tokens simple)
         for s in parsed.get("required_skills", [])[:100]:
             if isinstance(s, str) and s.strip():
                 domain_tags.append(f"REQ_SKILL:{s.strip()}")
@@ -1466,29 +1511,36 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
             if isinstance(s, str) and s.strip():
                 domain_tags.append(f"PREF_SKILL:{s.strip()}")
 
+        # include key tool tags
         for t in parsed.get("tools_tech", [])[:100]:
             if isinstance(t, str) and t.strip():
                 domain_tags.append(f"TOOL:{t.strip()}")
 
+        # include canonical top-level domain tags if present (e.g., AIML, Fullstack)
         if isinstance(parsed.get("domain_tags"), list):
             for t in parsed.get("domain_tags"):
                 if isinstance(t, str) and t.strip():
                     domain_tags.append(f"DOMAIN_TOP:{t.strip()}")
 
+        # Add HR notes as compact tags that keep human-readable content while machine-detectable
         for hr in parsed.get("hr_notes", [])[:200]:
             cat = hr.get("category", "general")
             typ = hr.get("type", "recommendation")
             note = hr.get("note", "")
             impact = hr.get("impact", 0)
+            # sanitize and limit length
             note_short = (note.strip()[:240] + "...") if len(note.strip()) > 240 else note.strip()
+            # compact HR tag format
             hr_tag = f"HR_NOTE:cat={cat};type={typ};impact={impact};note={note_short}"
             domain_tags.append(hr_tag)
 
+        # add explainability top phrases as tags to influence semantic weighting quickly
         top_phrases = parsed.get("explainability", {}).get("top_jd_sentences", []) if parsed.get("explainability") else []
         for p in top_phrases[:20]:
             if isinstance(p, str) and p.strip():
                 domain_tags.append(f"PHRASE:{p.strip()[:200]}")
 
+        # final assignment (dedupe while keeping order)
         seen = set()
         deduped = []
         for t in domain_tags:
@@ -1501,20 +1553,19 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
             deduped.append(t)
         parsed["domain_tags"] = deduped
 
+        # ensure seniority_level is present for downstream consumers
         parsed["seniority_level"] = seniority
 
+        # if hr_points missing, set to len of hr_notes
         if "hr_points" not in parsed:
             parsed["hr_points"] = len(parsed.get("hr_notes", []))
 
     except Exception as _err:
+        # don't fail the whole pipeline on tagging; just log
         logging.exception("Failed to enrich domain_tags: %s", repr(_err))
 
-    # --- THE CRITICAL FIX IS HERE ---
-    # We guarantee the file writes internally before exiting the function
-    with open(out_path, "w", encoding="utf-8") as wf:
-        json.dump(parsed, wf, indent=2, ensure_ascii=False)
-    
     return parsed
+
 
 # ---------------------------
 # Entrypoint
@@ -1522,9 +1573,10 @@ def process_jd_file(in_path: str = INPUT_FILE, out_path: str = OUTPUT_FILE) -> d
 if __name__ == "__main__":
     print("[START] JD processing")
     try:
-        # File paths are safely defaulted, and the write logic handles itself internally
-        jd_json = process_jd_file()
-        print(f"[OK] JD JSON successfully generated!")
+        jd_json = process_jd_file(INPUT_FILE)
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as wf:
+            json.dump(jd_json, wf, indent=2, ensure_ascii=False)
+        print(f"[OK] JD JSON written -> {OUTPUT_FILE}")
     except Exception as e:
         logging.error(f"JD Processing failed: {repr(e)}")
         print(f"[ERROR] JD processing failed: {e}")
